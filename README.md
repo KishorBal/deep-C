@@ -3,7 +3,8 @@
 Deep-C is an Android Deep Link Exploitation Framework that automatically decompiles APKs, identifies insecure deep link entry points, maps real-world attack scenarios, and generates executable adb Proof-of-Concepts (PoCs).
 It is designed for mobile application penetration testing, red team assessments, and security research.
 
-<img width="1023" height="790" alt="image" src="https://github.com/user-attachments/assets/47c50c4d-480e-4fb7-87d6-258ac7012c92" />
+<img width="1023" height="790" alt="image" src="https://github.com/user-attachments/assets/f5cdc5ef-65b5-4447-bd6f-bac3cf9459f5" />
+
 
 
 ✨ Features
