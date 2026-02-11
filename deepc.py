@@ -40,7 +40,7 @@ def banner():
 ██████╔╝███████╗███████╗██║          ╚██████╗
 ╚═════╝ ╚══════╝╚══════╝╚═╝           ╚═════╝
 
- Deep-C | Android Deep Link Exploitation Framework
+ Deep-C | Android Deep Link Exploitation Framework By Kishor Balan
  Decompile • Detect • Validate • Exploit
 """)
 
