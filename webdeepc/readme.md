@@ -14,8 +14,6 @@ It provides a premium glass-style UI for uploading APKs, analyzing deep link vul
 
 - 📦 Drag & Drop APK upload
 - 🔍 Automatic Deep Link Discovery
-- 🚪 Exported Activity Detection
-- 🌐 WebView Injection Detection
 - ⚠️ Weak Host Validation Detection
 - 🧠 Optional AI Review
 - 💻 ADB Exploit PoC Generation
