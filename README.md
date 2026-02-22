@@ -4,6 +4,11 @@
 
 Deep-C is designed for **mobile application penetration testing**, **red team assessments**, and **Android security research**, with a strong focus on **real-world exploitability** rather than noisy findings.
 
+WebdeepC -(Web version)
+
+<img width="1661" height="807" alt="image" src="https://github.com/user-attachments/assets/1785b156-b148-4e09-930d-f402dc64746d" />
+
+CLI 
 <img width="1225" height="731" alt="image" src="https://github.com/user-attachments/assets/ac5fc7a9-2ba6-4228-951f-1a351415c163" />
 
 ---
